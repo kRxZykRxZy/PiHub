@@ -15,47 +15,35 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/** Google Play subscriptions used by PiHub. */
+/** Google Play Billing for PiHub: Pro subscription + Lifetime one-time purchase. */
 class PiHubBillingManager(context: Context) : BillingClient.PurchasesUpdatedListener {
     companion object {
         const val PRO = "pihub_pro"
-        const val PRO_PLUS = "pihub_pro_plus"
+        const val LIFETIME = "pihub_lifetime"
+        const val PRO_PRICE = "£2.99/month"
+        const val LIFETIME_PRICE = "£8.99"
     }
 
-    data class Plan(
-        val productId: String,
-        val title: String,
-        val description: String,
-        val price: String,
-        val offerToken: String?
-    )
+    data class Plan(val productId: String, val title: String, val description: String, val price: String, val offerToken: String?, val type: String)
 
     private val _plans = MutableStateFlow<List<Plan>>(emptyList())
     val plans: StateFlow<List<Plan>> = _plans.asStateFlow()
-
     private val _activeProductId = MutableStateFlow<String?>(null)
     val activeProductId: StateFlow<String?> = _activeProductId.asStateFlow()
-
     private val _message = MutableStateFlow("")
     val message: StateFlow<String> = _message.asStateFlow()
 
     private val billingClient = BillingClient.newBuilder(context.applicationContext)
         .setListener(this)
-        .enablePendingPurchases(
-            PendingPurchasesParams.newBuilder().enableOneTimeProducts().build()
-        )
+        .enablePendingPurchases(PendingPurchasesParams.newBuilder().enableOneTimeProducts().build())
         .enableAutoServiceReconnection()
         .build()
 
     init {
         billingClient.startConnection(object : BillingClient.BillingClientStateListener {
             override fun onBillingSetupFinished(result: BillingResult) {
-                if (result.responseCode == BillingClient.BillingResponseCode.OK) {
-                    queryPlans()
-                    refreshPurchases()
-                } else {
-                    _message.value = "Google Play Billing unavailable: ${result.debugMessage}"
-                }
+                if (result.responseCode == BillingClient.BillingResponseCode.OK) { queryPlans(); refreshPurchases() }
+                else _message.value = "Google Play Billing unavailable: ${result.debugMessage}"
             }
             override fun onBillingServiceDisconnected() = Unit
         })
@@ -63,84 +51,57 @@ class PiHubBillingManager(context: Context) : BillingClient.PurchasesUpdatedList
 
     fun queryPlans() {
         if (!billingClient.isReady) return
-        val products = listOf(PRO, PRO_PLUS).map { id ->
-            QueryProductDetailsParams.Product.newBuilder()
-                .setProductId(id)
-                .setProductType(ProductType.SUBS)
-                .build()
-        }
-        billingClient.queryProductDetailsAsync(
-            QueryProductDetailsParams.newBuilder().setProductList(products).build()
-        ) { result, response ->
-            if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                _message.value = result.debugMessage
-                return@queryProductDetailsAsync
-            }
+        val products = listOf(
+            QueryProductDetailsParams.Product.newBuilder().setProductId(PRO).setProductType(ProductType.SUBS).build(),
+            QueryProductDetailsParams.Product.newBuilder().setProductId(LIFETIME).setProductType(ProductType.INAPP).build()
+        )
+        billingClient.queryProductDetailsAsync(QueryProductDetailsParams.newBuilder().setProductList(products).build()) { result, response ->
+            if (result.responseCode != BillingClient.BillingResponseCode.OK) { _message.value = result.debugMessage; return@queryProductDetailsAsync }
             _plans.value = response.productDetailsList.mapNotNull { product ->
-                val offer = product.subscriptionOfferDetails?.firstOrNull()
-                val price = offer?.pricingPhases?.pricingPhaseList?.lastOrNull()?.formattedPrice
-                    ?: return@mapNotNull null
-                Plan(product.productId, product.title, product.description, price, offer.offerToken)
+                if (product.productType == ProductType.SUBS) {
+                    val offer = product.subscriptionOfferDetails?.firstOrNull() ?: return@mapNotNull null
+                    val price = offer.pricingPhases.pricingPhaseList.lastOrNull()?.formattedPrice ?: return@mapNotNull null
+                    Plan(product.productId, product.title, product.description, price, offer.offerToken, "subscription")
+                } else {
+                    val price = product.oneTimePurchaseOfferDetails?.formattedPrice ?: return@mapNotNull null
+                    Plan(product.productId, product.title, product.description, price, null, "lifetime")
+                }
             }
         }
     }
 
     fun buy(activity: Activity, productId: String) {
-        if (_activeProductId.value == productId) {
-            _message.value = "You already have this PiHub plan."
-            return
-        }
-        billingClient.queryProductDetailsAsync(
-            QueryProductDetailsParams.newBuilder()
-                .setProductList(
-                    listOf(
-                        QueryProductDetailsParams.Product.newBuilder()
-                            .setProductId(productId)
-                            .setProductType(ProductType.SUBS)
-                            .build()
-                    )
-                ).build()
-        ) { result, response ->
-            if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                _message.value = result.debugMessage
-                return@queryProductDetailsAsync
+        val type = if (productId == LIFETIME) ProductType.INAPP else ProductType.SUBS
+        billingClient.queryProductDetailsAsync(QueryProductDetailsParams.newBuilder().setProductList(listOf(
+            QueryProductDetailsParams.Product.newBuilder().setProductId(productId).setProductType(type).build()
+        )).build()) { result, response ->
+            if (result.responseCode != BillingClient.BillingResponseCode.OK) { _message.value = result.debugMessage; return@queryProductDetailsAsync }
+            val details = response.productDetailsList.firstOrNull() ?: run { _message.value = "Plan unavailable on Google Play."; return@queryProductDetailsAsync }
+            val params = BillingFlowParams.ProductDetailsParams.newBuilder().setProductDetails(details)
+            if (type == ProductType.SUBS) {
+                val offer = details.subscriptionOfferDetails?.firstOrNull() ?: run { _message.value = "Pro subscription unavailable on Google Play."; return@queryProductDetailsAsync }
+                params.setOfferToken(offer.offerToken)
             }
-            val details = response.productDetailsList.firstOrNull()
-            val offer = details?.subscriptionOfferDetails?.firstOrNull()
-            if (details == null || offer == null) {
-                _message.value = "Plan unavailable on Google Play."
-                return@queryProductDetailsAsync
-            }
-            val productParams = BillingFlowParams.ProductDetailsParams.newBuilder()
-                .setProductDetails(details)
-                .setOfferToken(offer.offerToken)
-                .build()
-            billingClient.launchBillingFlow(
-                activity,
-                BillingFlowParams.newBuilder()
-                    .setProductDetailsParamsList(listOf(productParams))
-                    .build()
-            )
+            billingClient.launchBillingFlow(activity, BillingFlowParams.newBuilder().setProductDetailsParamsList(listOf(params.build())).build())
         }
     }
 
     fun refreshPurchases() {
         if (!billingClient.isReady) return
-        billingClient.queryPurchasesAsync(
-            QueryPurchasesParams.newBuilder().setProductType(ProductType.SUBS).build()
-        ) { result, purchases ->
+        billingClient.queryPurchasesAsync(QueryPurchasesParams.newBuilder().setProductType(ProductType.SUBS).build()) { result, purchases ->
+            if (result.responseCode == BillingClient.BillingResponseCode.OK) applyPurchases(purchases)
+        }
+        billingClient.queryPurchasesAsync(QueryPurchasesParams.newBuilder().setProductType(ProductType.INAPP).build()) { result, purchases ->
             if (result.responseCode == BillingClient.BillingResponseCode.OK) {
-                applyPurchases(purchases)
+                purchases.forEach(::processPurchase)
+                if (purchases.any { it.purchaseState == Purchase.PurchaseState.PURCHASED }) _activeProductId.value = LIFETIME
             }
         }
     }
 
     override fun onPurchasesUpdated(result: BillingResult, purchases: MutableList<Purchase>?) {
         when (result.responseCode) {
-            BillingClient.BillingResponseCode.OK -> {
-                purchases.orEmpty().forEach(::processPurchase)
-                _message.value = "PiHub subscription updated."
-            }
+            BillingClient.BillingResponseCode.OK -> { purchases.orEmpty().forEach(::processPurchase); _message.value = "PiHub purchase updated." }
             BillingClient.BillingResponseCode.USER_CANCELED -> _message.value = "Purchase cancelled."
             else -> _message.value = result.debugMessage.ifBlank { "Google Play purchase failed." }
         }
@@ -148,23 +109,13 @@ class PiHubBillingManager(context: Context) : BillingClient.PurchasesUpdatedList
 
     private fun applyPurchases(purchases: List<Purchase>) {
         purchases.forEach(::processPurchase)
-        _activeProductId.value = purchases.firstOrNull {
-            it.purchaseState == Purchase.PurchaseState.PURCHASED
-        }?.products?.firstOrNull()
+        purchases.firstOrNull { it.purchaseState == Purchase.PurchaseState.PURCHASED }?.products?.firstOrNull()?.let { _activeProductId.value = it }
     }
 
     private fun processPurchase(purchase: Purchase) {
-        if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED) return
-        if (!purchase.isAcknowledged) {
-            billingClient.acknowledgePurchase(
-                AcknowledgePurchaseParams.newBuilder()
-                    .setPurchaseToken(purchase.purchaseToken)
-                    .build()
-            ) { result ->
-                if (result.responseCode != BillingClient.BillingResponseCode.OK) {
-                    _message.value = "Purchase acknowledgement failed: ${result.debugMessage}"
-                }
-            }
+        if (purchase.purchaseState != Purchase.PurchaseState.PURCHASED || purchase.isAcknowledged) return
+        billingClient.acknowledgePurchase(AcknowledgePurchaseParams.newBuilder().setPurchaseToken(purchase.purchaseToken).build()) { result ->
+            if (result.responseCode != BillingClient.BillingResponseCode.OK) _message.value = "Purchase acknowledgement failed: ${result.debugMessage}"
         }
     }
 
