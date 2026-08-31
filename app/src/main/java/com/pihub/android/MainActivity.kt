@@ -341,11 +341,12 @@ fun MoreScreen(vm: PiHubViewModel, s: PiStats) {
     var section by remember { mutableStateOf("Services") }
     LazyColumn(contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { TopBar("PiHub Tools") }
-        item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Services", "Terminal", "GPIO", "Settings").forEach { x -> FilterChip(selected = section == x, onClick = { section = x }, label = { Text(x) }) } } }
+        item { Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("Services", "Terminal", "GPIO", "Plans", "Settings").forEach { x -> FilterChip(selected = section == x, onClick = { section = x }, label = { Text(x) }) } } }
         when (section) {
             "Services" -> { item { ServicesScreen(vm) } }
             "Terminal" -> { item { TerminalScreen(vm, s.hostname) } }
             "GPIO" -> { item { GpioScreen() } }
+            "Plans" -> { item { PiHubPlansScreen() } }
             else -> { item { SettingsScreen(s) } }
         }
     }
