@@ -31,5 +31,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.github.mwiede:jsch:0.2.20")
+
+    // Google Play Billing for PiHub Pro / Pro+ subscriptions.
+    implementation("com.android.billingclient:billing-ktx:9.1.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
